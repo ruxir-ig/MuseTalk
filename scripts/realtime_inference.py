@@ -13,7 +13,7 @@ import json
 from transformers import WhisperModel
 
 from musetalk.utils.face_parsing import FaceParsing
-from musetalk.utils.utils import datagen
+from musetalk.utils.utils import datagen, get_file_type
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.blending import get_image_prepare_material, get_image_blending
 from musetalk.utils.utils import load_all_model
@@ -151,7 +151,11 @@ class Avatar:
             json.dump(self.avatar_info, f)
 
         if os.path.isfile(self.video_path):
-            video2imgs(self.video_path, self.full_imgs_path, ext='png')
+            if get_file_type(self.video_path) == "video":
+                video2imgs(self.video_path, self.full_imgs_path, ext='png')
+            elif get_file_type(self.video_path) == "image":
+                # Copy single image to full_imgs_path with consistent naming
+                shutil.copy(self.video_path, f"{self.full_imgs_path}/00000000.png")
         else:
             print(f"copy files in {self.video_path}")
             files = os.listdir(self.video_path)

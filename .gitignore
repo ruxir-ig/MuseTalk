@@ -16,3 +16,57 @@ ffplay*
 debug
 exp_out
 .gradio
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.flv
+*.webm
+*.wmv
+
+# Audio files
+*.mp3
+*.wav
+*.aac
+*.ogg
+*.flac
+*.m4a
+
+# Image files (keep example data, ignore generated frames)
+test_*.png
+temp_*.png
+%08d.png
+
+# Large model files
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# Temporary files
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store?
+.Spotlight-V100
+.Trashes
+
+# IDE and editor files
+*.sublime-project
+*.code-workspace
+.settings/
+.project/
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+*.pyo

@@ -223,6 +223,7 @@ def inference(audio_path, video_path, bbox_shift, extra_margin=10, parsing_mode=
         output_vid_name = os.path.join(temp_dir, args.output_vid_name)
         
     ############################################## extract frames from source video ##############################################
+    save_dir_full = None  # Initialize for cleanup check
     if get_file_type(video_path) == "video":
         save_dir_full = os.path.join(temp_dir, input_basename)
         os.makedirs(save_dir_full, exist_ok=True)
@@ -234,6 +235,10 @@ def inference(audio_path, video_path, bbox_shift, extra_margin=10, parsing_mode=
             imageio.imwrite(f"{save_dir_full}/{i:08d}.png", im)
         input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
         fps = get_video_fps(video_path)
+    elif get_file_type(video_path) == "image":
+        # Single image input
+        input_img_list = [video_path]
+        fps = args.fps
     else: # input img folder
         input_img_list = glob.glob(os.path.join(video_path, '*.[jpJP][pnPN]*[gG]'))
         input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
@@ -432,25 +437,29 @@ whisper.requires_grad_(False)
 def check_video(video):
     if not isinstance(video, str):
         return video # in case of none type
+    
+    # Skip processing for images - only process videos
+    if get_file_type(video) == "image":
+        return video
+    
     # Define the output video file name
     dir_path, file_name = os.path.split(video)
     if file_name.startswith("outputxxx_"):
         return video
-    # Add the output prefix to the file name
-    output_file_name = "outputxxx_" + file_name
-
+    # Add output prefix to file name
+    output_file_name = "outputxxx_" + file_name 
+    
     os.makedirs('./results',exist_ok=True)
     os.makedirs('./results/output',exist_ok=True)
     os.makedirs('./results/input',exist_ok=True)
-
-    # Combine the directory path and the new file name
-    output_video = os.path.join('./results/input', output_file_name)
-
-
+    
+    # Combine the directory path and new file name
+    output_video = os.path.join('./results/input', output_file_name) 
+    
     # read video
     reader = imageio.get_reader(video)
     fps = reader.get_meta_data()['fps']  # get fps from original video
-
+    
     # conver fps to 25
     frames = [im for im in reader]
     target_fps = 25
@@ -465,8 +474,8 @@ def check_video(video):
             t_idx += 1      # find the first t_idx so that target_t / target_fps <= original_t[t_idx]
             if t_idx >= L:
                 break
-        target_frames.append(frames[t_idx])
-
+        target_frames.append(frames[t_idx]) 
+    
     # save video
     imageio.mimwrite(output_video, target_frames, 'FFMPEG', fps=25, codec='libx264', quality=9, pixelformat='yuv420p')
     return output_video
@@ -502,7 +511,7 @@ with gr.Blocks(css=css) as demo:
     with gr.Row():
         with gr.Column():
             audio = gr.Audio(label="Drving Audio",type="filepath")
-            video = gr.Video(label="Reference Video",sources=['upload'])
+            video = gr.File(label="Reference Image/Video", file_types=[".jpg", ".jpeg", ".png", ".mp4", ".avi", ".mov"])
             bbox_shift = gr.Number(label="BBox_shift value, px", value=0)
             extra_margin = gr.Slider(label="Extra Margin", minimum=0, maximum=40, value=10, step=1)
             parsing_mode = gr.Radio(label="Parsing Mode", choices=["jaw", "raw"], value="jaw")
@@ -516,7 +525,7 @@ with gr.Blocks(css=css) as demo:
         with gr.Column():
             debug_image = gr.Image(label="Test Inpainting Result (First Frame)")
             debug_info = gr.Textbox(label="Parameter Information", lines=5)
-            out1 = gr.Video()
+            out1 = gr.Video(label="Output Video")
     
     video.change(
         fn=check_video, inputs=[video], outputs=[video]
