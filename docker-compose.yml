@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  musetalk-api:
+    build: .
+    container_name: musetalk-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./results:/app/results
+      - ./models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+    restart: unless-stopped
