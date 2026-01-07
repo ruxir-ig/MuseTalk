@@ -1,0 +1,11 @@
+task_0:
+  video_path: "/home/ruxir/Pictures/test_images/grok_image_i0o3ya.jpg"
+  audio_path: "/home/ruxir/Music/story_alice.mp3"
+
+task_1:
+  video_path: "/home/ruxir/Pictures/test_images/grok_image_kjlqwl.jpg"
+  audio_path: "/home/ruxir/Music/story_alice.mp3"
+
+task_2:
+  video_path: "/home/ruxir/Pictures/test_images/grok_image_ls5b78.jpg"
+  audio_path: "/home/ruxir/Music/story_alice.mp3"
