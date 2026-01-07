@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MuseTalk CLI: Simple interface for generating lip-synced videos from image/video and audio.
+MuseTalk CLI: Generate lip-synced videos from image/video and audio.
 
 Usage:
     python run_musetalk.py <input_image_or_video> <audio_file> <output_dir> [options]
@@ -8,7 +8,6 @@ Usage:
 Examples:
     python run_musetalk.py ./face.png ./audio.wav ./output/
     python run_musetalk.py ./face.png ./audio.wav ./output/ --enhance
-    python run_musetalk.py ./face.png ./audio.wav ./output/ --enhance-gfpgan
 """
 
 import os
@@ -68,51 +67,7 @@ def ensure_gfpgan_installed():
             return False
 
 
-def apply_opencv_enhancement(input_dir, output_dir):
-    """
-    Apply lightweight OpenCV-based face enhancement to all images.
-    No model downloads required - uses only OpenCV filters.
-
-    Applies:
-    - Bilateral filtering (smoothing while preserving edges)
-    - Unsharp masking (sharpening)
-    - CLAHE (adaptive histogram equalization for better contrast)
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    image_files = sorted(glob.glob(os.path.join(input_dir, "*.[jpJP][pnPN]*[gG]")))
-
-    print(f"Applying OpenCV enhancement to {len(image_files)} frames...")
-    for img_path in tqdm(image_files, desc="Enhancing"):
-        img_name = os.path.basename(img_path)
-        img = cv2.imread(img_path)
-
-        if img is None:
-            continue
-
-        # 1. Bilateral filter (smoothing while preserving edges)
-        enhanced = cv2.bilateralFilter(img, 9, 75, 75)
-
-        # 2. Unsharp masking for subtle sharpening
-        gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
-        enhanced = cv2.addWeighted(enhanced, 1.3, gaussian, -0.3, 0)
-
-        # 3. CLAHE on LAB color space for better contrast
-        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-        lab = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-        cv2.imwrite(os.path.join(output_dir, img_name), enhanced)
-
-    print(f"Enhanced frames saved to {output_dir}")
-
-
-def apply_gfpgan_enhancement(
-    input_dir, output_dir, upscale=1, weight=0.5, use_fp16=False
-):
+def apply_gfpgan_enhancement(input_dir, output_dir, upscale=1, weight=0.5, use_fp16=False):
     """
     Apply GFPGAN deep learning enhancement to all images in a directory.
     Requires GFPGAN to be installed (pip install gfpgan).
@@ -257,13 +212,9 @@ def run_inference(args):
     if get_file_type(video_path) == "video":
         save_dir_full = os.path.join(temp_dir, input_basename)
         os.makedirs(save_dir_full, exist_ok=True)
-        cmd = (
-            f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
-        )
+        cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
         os.system(cmd)
-        input_img_list = sorted(
-            glob.glob(os.path.join(save_dir_full, "*.[jpJP][pnPN]*[gG]"))
-        )
+        input_img_list = sorted(glob.glob(os.path.join(save_dir_full, "*.[jpJP][pnPN]*[gG]")))
         fps = get_video_fps(video_path)
     elif get_file_type(video_path) == "image":
         input_img_list = [video_path]
@@ -282,9 +233,7 @@ def run_inference(args):
     print(f"Processing {len(input_img_list)} frames at {fps} FPS")
 
     # Extract audio features
-    whisper_input_features, librosa_length = audio_processor.get_audio_feature(
-        audio_path
-    )
+    whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
     whisper_chunks = audio_processor.get_whisper_chunk(
         whisper_input_features,
         device,
@@ -322,9 +271,7 @@ def run_inference(args):
             y2 = y2 + args.extra_margin
             y2 = min(y2, frame.shape[0])
         crop_frame = frame[y1:y2, x1:x2]
-        crop_frame = cv2.resize(
-            crop_frame, (256, 256), interpolation=cv2.INTER_LANCZOS4
-        )
+        crop_frame = cv2.resize(crop_frame, (256, 256), interpolation=cv2.INTER_LANCZOS4)
         latents = vae.get_latents_for_unet(crop_frame)
         input_latent_list.append(latents)
 
@@ -384,26 +331,18 @@ def run_inference(args):
         cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png", combine_frame)
 
     # Apply enhancement if requested
-    if args.enhance or args.enhance_gfpgan:
+    if args.enhance:
         enhanced_img_path = os.path.join(temp_dir, f"{output_basename}_enhanced")
 
-        if args.enhance_gfpgan:
-            print("Applying GFPGAN enhancement...")
-            apply_gfpgan_enhancement(
-                result_img_save_path,
-                enhanced_img_path,
-                upscale=1,
-                weight=0.5,
-                use_fp16=args.use_float16,
-            )
-        else:
-            print("Applying OpenCV enhancement...")
-            apply_opencv_enhancement(
-                result_img_save_path,
-                enhanced_img_path,
-            )
+        print("Applying GFPGAN enhancement...")
+        apply_gfpgan_enhancement(
+            result_img_save_path,
+            enhanced_img_path,
+            upscale=1,
+            weight=0.5,
+            use_fp16=args.use_float16,
+        )
 
-        # Use enhanced frames for video creation
         result_img_save_path = enhanced_img_path
 
     # Save prediction results
@@ -413,9 +352,7 @@ def run_inference(args):
     os.system(cmd_img2video)
 
     # Combine with audio
-    cmd_combine_audio = (
-        f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"
-    )
+    cmd_combine_audio = f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"
     print("Combining with audio...")
     os.system(cmd_combine_audio)
 
@@ -437,27 +374,18 @@ def main():
 Examples:
   python run_musetalk.py ./face.png ./audio.wav ./output/
   python run_musetalk.py ./face.png ./audio.wav ./output/ --enhance
-  python run_musetalk.py ./face.png ./audio.wav ./output/ --enhance-gfpgan
   python run_musetalk.py ./video.mp4 ./audio.wav ./output/ --version v1 --use_float16
         """,
     )
 
-    # Positional arguments
     parser.add_argument("input", type=str, help="Path to input image or video file")
     parser.add_argument("audio", type=str, help="Path to input audio file")
     parser.add_argument("output_dir", type=str, help="Directory to save output video")
 
-    # Optional arguments
     parser.add_argument(
         "--enhance",
         action="store_true",
-        help="Apply lightweight OpenCV face enhancement (fast, no downloads)",
-    )
-    parser.add_argument(
-        "--enhance-gfpgan",
-        action="store_true",
-        dest="enhance_gfpgan",
-        help="Apply GFPGAN deep learning enhancement (better quality, requires download)",
+        help="Apply GFPGAN face enhancement (better quality)",
     )
     parser.add_argument(
         "--version",
@@ -469,14 +397,10 @@ Examples:
     parser.add_argument(
         "--use_float16",
         action="store_true",
-        help="Use float16 for faster inference (lower VRAM usage). Also speeds up GFPGAN when used with --enhance-gfpgan.",
+        help="Use float16 for faster inference (lower VRAM usage)",
     )
-    parser.add_argument(
-        "--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)"
-    )
-    parser.add_argument(
-        "--fps", type=int, default=25, help="Output video FPS (default: 25)"
-    )
+    parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID to use (default: 0)")
+    parser.add_argument("--fps", type=int, default=25, help="Output video FPS (default: 25)")
     parser.add_argument(
         "--batch_size", type=int, default=8, help="Inference batch size (default: 8)"
     )
@@ -560,14 +484,11 @@ Examples:
 
     args.whisper_dir = "./models/whisper"
 
-    # Check GFPGAN if enhancement is requested
-    if args.enhance_gfpgan:
+    if args.enhance:
         if not ensure_gfpgan_installed():
-            print(
-                "Warning: GFPGAN installation failed. Falling back to OpenCV enhancement."
-            )
-            args.enhance_gfpgan = False
-            args.enhance = True
+            print("Error: GFPGAN required for --enhance but installation failed.")
+            print("Install manually: pip install gfpgan")
+            sys.exit(1)
 
     # Run inference
     try:

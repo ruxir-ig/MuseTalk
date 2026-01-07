@@ -3,12 +3,45 @@ version: '3.8'
 services:
   musetalk-api:
     build: .
+    image: musetalk:latest
     container_name: musetalk-api
     ports:
       - "8000:8000"
     volumes:
+      - ./models:/app/models:ro
       - ./results:/app/results
-      - ./models:/app/models
+      - ./data:/app/data:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  musetalk-gradio:
+    build: .
+    image: musetalk:latest
+    container_name: musetalk-gradio
+    command: python app.py --ip 0.0.0.0 --port 7860
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./models:/app/models:ro
+      - ./results:/app/results
+      - ./data:/app/data:ro
     deploy:
       resources:
         reservations:
@@ -18,4 +51,7 @@ services:
               capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+    profiles:
+      - testing
     restart: unless-stopped

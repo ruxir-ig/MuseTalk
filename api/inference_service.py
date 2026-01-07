@@ -1,33 +1,38 @@
 import os
-import torch
-import gc
 import shutil
-from pathlib import Path
-from typing import Tuple, Dict, Any
-import numpy as np
-
-from transformers import WhisperModel
-from tqdm import tqdm
-from omegaconf import OmegaConf
 import copy
-import cv2
 import glob
-import pickle
-import imageio
+from typing import Dict, Any, Optional
+
+import cv2
+import numpy as np
+import torch
+from tqdm import tqdm
+from transformers import WhisperModel
 
 from musetalk.utils.blending import get_image
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
-from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder
+from musetalk.utils.preprocessing import get_landmark_and_bbox, coord_placeholder
+
 
 class MuseTalkInference:
-    def __init__(self, use_float16=True, gpu_id=0):
+    def __init__(self, use_float16: bool = True, gpu_id: int = 0):
         self.use_float16 = use_float16
         self.device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
         self.models_loaded = False
+        self.gfpgan_restorer = None
 
-    def load_models(self):
+        self.vae = None
+        self.unet = None
+        self.pe = None
+        self.timesteps = None
+        self.weight_dtype = torch.float32
+        self.audio_processor = None
+        self.whisper = None
+
+    def load_models(self) -> None:
         if self.models_loaded:
             return
 
@@ -37,7 +42,7 @@ class MuseTalkInference:
             unet_model_path="./models/musetalkV15/unet.pth",
             vae_type="sd-vae",
             unet_config="./models/musetalkV15/musetalk.json",
-            device=self.device
+            device=self.device,
         )
 
         self.timesteps = torch.tensor([0], device=self.device)
@@ -62,11 +67,60 @@ class MuseTalkInference:
         self.models_loaded = True
         print("Models loaded successfully!")
 
+    def _load_gfpgan(self) -> None:
+        if self.gfpgan_restorer is not None:
+            return
+
+        from gfpgan import GFPGANer
+
+        print("Loading GFPGAN model...")
+        self.gfpgan_restorer = GFPGANer(
+            model_path="https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth",
+            upscale=1,
+            arch="clean",
+            channel_multiplier=2,
+        )
+        print("GFPGAN loaded!")
+
+    def _apply_gfpgan(self, input_dir: str, output_dir: str, weight: float = 0.5) -> None:
+        self._load_gfpgan()
+
+        os.makedirs(output_dir, exist_ok=True)
+        image_files = sorted(glob.glob(os.path.join(input_dir, "*.[jpJP][pnPN]*[gG]")))
+
+        print(f"Applying GFPGAN enhancement to {len(image_files)} frames...")
+        for img_path in tqdm(image_files, desc="GFPGAN"):
+            img_name = os.path.basename(img_path)
+            img = cv2.imread(img_path)
+
+            if self.use_float16:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    _, _, enhanced_img = self.gfpgan_restorer.enhance(
+                        img,
+                        has_aligned=False,
+                        only_center_face=False,
+                        paste_back=True,
+                        weight=weight,
+                    )
+            else:
+                _, _, enhanced_img = self.gfpgan_restorer.enhance(
+                    img,
+                    has_aligned=False,
+                    only_center_face=False,
+                    paste_back=True,
+                    weight=weight,
+                )
+
+            cv2.imwrite(os.path.join(output_dir, img_name), enhanced_img)
+
+        print(f"Enhanced frames saved to {output_dir}")
+
     @torch.no_grad()
     def generate(
         self,
         audio_path: str,
         video_path: str,
+        enhance: bool = False,
         bbox_shift: int = 0,
         extra_margin: int = 10,
         parsing_mode: str = "jaw",
@@ -74,41 +128,47 @@ class MuseTalkInference:
         right_cheek_width: int = 90,
         fps: int = 25,
         batch_size: int = 8,
-        output_name: str = None,
-        result_dir: str = './results'
+        output_name: Optional[str] = None,
+        result_dir: str = "./results",
     ) -> str:
         if not self.models_loaded:
             self.load_models()
 
-        input_basename = os.path.basename(video_path).split('.')[0]
-        audio_basename = os.path.basename(audio_path).split('.')[0]
+        os.makedirs(result_dir, exist_ok=True)
+
+        input_basename = os.path.basename(video_path).split(".")[0]
+        audio_basename = os.path.basename(audio_path).split(".")[0]
 
         if output_name:
-            output_name = os.path.splitext(output_name)[0] if output_name.endswith('.mp4') else output_name
+            output_name = (
+                os.path.splitext(output_name)[0] if output_name.endswith(".mp4") else output_name
+            )
             output_vid_name = os.path.join(result_dir, f"{output_name}.mp4")
         else:
             output_vid_name = os.path.join(result_dir, f"{input_basename}_{audio_basename}.mp4")
 
-        temp_dir = os.path.join(result_dir, "v15_temp")
+        temp_dir = os.path.join(result_dir, "temp")
         os.makedirs(temp_dir, exist_ok=True)
 
         result_img_save_path = os.path.join(temp_dir, f"{input_basename}_{audio_basename}")
-        crop_coord_save_path = os.path.join(result_dir, f"{input_basename}.pkl")
         os.makedirs(result_img_save_path, exist_ok=True)
 
         save_dir_full = None
         if get_file_type(video_path) == "video":
             save_dir_full = os.path.join(temp_dir, input_basename)
             os.makedirs(save_dir_full, exist_ok=True)
+
+            import imageio
+
             reader = imageio.get_reader(video_path)
             for i, im in enumerate(reader):
                 imageio.imwrite(f"{save_dir_full}/{i:08d}.png", im)
             reader.close()
-            input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
-            fps = get_video_fps(video_path)
+
+            input_img_list = sorted(glob.glob(os.path.join(save_dir_full, "*.[jpJP][pnPN]*[gG]")))
+            fps = int(get_video_fps(video_path))
         elif get_file_type(video_path) == "image":
             input_img_list = [video_path]
-            fps = 25
         else:
             raise ValueError(f"{video_path} should be a video file or an image file")
 
@@ -126,10 +186,7 @@ class MuseTalkInference:
 
         coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
 
-        fp = FaceParsing(
-            left_cheek_width=left_cheek_width,
-            right_cheek_width=right_cheek_width
-        )
+        fp = FaceParsing(left_cheek_width=left_cheek_width, right_cheek_width=right_cheek_width)
 
         input_latent_list = []
         for bbox, frame in zip(coord_list, frame_list):
@@ -165,7 +222,9 @@ class MuseTalkInference:
             audio_feature_batch = self.pe(whisper_batch)
             latent_batch = latent_batch.to(dtype=self.weight_dtype)
 
-            pred_latents = self.unet.model(latent_batch, self.timesteps, encoder_hidden_states=audio_feature_batch).sample
+            pred_latents = self.unet.model(
+                latent_batch, self.timesteps, encoder_hidden_states=audio_feature_batch
+            ).sample
             recon = self.vae.decode_latents(pred_latents)
             for res_frame in recon:
                 res_frame_list.append(res_frame)
@@ -178,35 +237,51 @@ class MuseTalkInference:
             y2 = y2 + extra_margin
             y2 = min(y2, ori_frame.shape[0])
             try:
-                res_frame = cv2.resize(res_frame.astype(np.uint8), (x2-x1, y2-y1))
-            except:
+                res_frame = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
+            except Exception:
                 continue
 
-            combine_frame = get_image(ori_frame, res_frame, [x1, y1, x2, y2], mode=parsing_mode, fp=fp)
+            combine_frame = get_image(
+                ori_frame, res_frame, [x1, y1, x2, y2], mode=parsing_mode, fp=fp
+            )
             cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png", combine_frame)
 
+        final_frames_path = result_img_save_path
+        if enhance:
+            enhanced_path = os.path.join(temp_dir, f"{input_basename}_{audio_basename}_enhanced")
+            self._apply_gfpgan(result_img_save_path, enhanced_path)
+            final_frames_path = enhanced_path
+
         temp_vid_path = os.path.join(temp_dir, f"temp_{input_basename}_{audio_basename}.mp4")
-        cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {result_img_save_path}/%08d.png -vcodec libx264 -vf format=yuv420p -crf 18 {temp_vid_path}"
+        cmd_img2video = (
+            f"ffmpeg -y -v warning -r {fps} -f image2 "
+            f"-i {final_frames_path}/%08d.png -vcodec libx264 "
+            f"-vf format=yuv420p -crf 18 {temp_vid_path}"
+        )
         os.system(cmd_img2video)
 
-        cmd_combine_audio = f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"
+        cmd_combine_audio = (
+            f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"
+        )
         os.system(cmd_combine_audio)
 
-        shutil.rmtree(result_img_save_path)
-        if save_dir_full and os.path.exists(save_dir_full):
-            shutil.rmtree(save_dir_full)
-        os.remove(temp_vid_path)
+        shutil.rmtree(temp_dir)
 
         print(f"Results saved to {output_vid_name}")
         return output_vid_name
 
     def get_gpu_info(self) -> Dict[str, Any]:
-        info = {
+        info: Dict[str, Any] = {
             "gpu_available": torch.cuda.is_available(),
-            "gpu_name": None
+            "gpu_name": None,
+            "memory_allocated": None,
+            "memory_reserved": None,
+            "memory_total": None,
         }
         if info["gpu_available"]:
             info["gpu_name"] = torch.cuda.get_device_name(0)
             info["memory_allocated"] = torch.cuda.memory_allocated(0)
             info["memory_reserved"] = torch.cuda.memory_reserved(0)
+            props = torch.cuda.get_device_properties(0)
+            info["memory_total"] = props.total_memory
         return info

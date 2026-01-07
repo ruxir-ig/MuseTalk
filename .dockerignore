@@ -12,7 +12,7 @@ build/
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # IDE
 .vscode/
@@ -20,30 +20,64 @@ ENV/
 *.swp
 *.swo
 
-# Models (will be downloaded in container)
-models/
-!models/.gitkeep
+# Git
+.git/
+.gitignore
+.github/
 
-# Results
+# Models (mounted as volume in production)
+models/
+
+# Results (mounted as volume)
 results/
-!results/.gitkeep
 
 # Temporary files
 *.tmp
 *.log
+*.temp
+*~
+temp.mp4
 
-# Git
-.git/
-.gitignore
-
-# Documentation
-*.md
-!README.md
-
-# Test files
-tests/
-.pytest_cache/
-
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Cache
+.cache/
+.ruff_cache/
+.pytest_cache/
+.gradio/
+
+# Training files (keep in repo, exclude from Docker)
+train.py
+train.sh
+scripts/preprocess.py
+scripts/realtime_inference.py
+
+# Development/test files (keep in repo, exclude from Docker)
+test_ffmpeg.py
+inference.sh
+entrypoint.sh
+main.py
+requirements.lock.txt
+
+# Large/temporary media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+grok_*.mp4
+
+# Documentation (not needed in runtime)
+*.md
+!README.md
+LICENSE
+
+# Lock files
+uv.lock
+
+# Docker files (not needed inside container)
+Dockerfile
+docker-compose*.yml

@@ -1,32 +1,76 @@
 [project]
 name = "musetalk"
-version = "0.1.0"
+version = "1.0.0"
 description = "Real-Time High-Fidelity Video Dubbing via Spatio-Temporal Sampling"
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = [
+    # PyTorch (CUDA 11.8)
     "torch==2.0.1+cu118",
     "torchvision==0.15.2+cu118",
     "torchaudio==2.0.2+cu118",
+    
+    # Core ML dependencies
     "diffusers==0.30.2",
     "accelerate==0.28.0",
-    "numpy==1.23.5",
-    "tensorflow==2.12.0",
-    "tensorboard==2.12.0",
-    "opencv-python==4.9.0.80",
-    "soundfile==0.12.1",
     "transformers==4.39.2",
-    "huggingface_hub==0.30.2",
-    "librosa==0.11.0",
-    "einops==0.8.1",
-    "gradio==5.24.0",
-    "gdown",
-    "requests",
+    "huggingface_hub>=0.20.0",
+    
+    # Numeric & Scientific
+    "numpy==1.23.5",
+    "scipy>=1.10.0",
+    
+    # Audio processing
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    
+    # Video/Image processing
+    "opencv-python>=4.8.0",
     "imageio[ffmpeg]",
-    "omegaconf",
     "ffmpeg-python",
     "moviepy",
+    
+    # GFPGAN and dependencies (face enhancement)
+    "gfpgan>=1.3.8",
+    "facexlib>=0.3.0",
+    "basicsr>=1.4.2",
+    "realesrgan>=0.3.0",
+    
+    # OpenMMLab (DWPose dependencies)
     "openmim",
+    "mmengine>=0.10.0",
+    "mmcv>=2.0.0",
+    "mmdet>=3.1.0",
+    "mmpose>=1.1.0",
+    
+    # FastAPI stack
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.22.0",
+    "python-multipart>=0.0.6",
+    
+    # Configuration & utilities
+    "omegaconf",
+    "einops>=0.7.0",
+    "pyyaml>=6.0",
+    "tqdm",
+    
+    # Download utilities
+    "gdown",
+    "requests",
+    
+    # Gradio (for testing UI)
+    "gradio>=4.0.0",
+    
+    # Additional dependencies
+    "filterpy>=1.4.5",
+    "lmdb>=1.4.0",
+    "yapf>=0.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
 ]
 
 [tool.uv]
@@ -44,4 +88,12 @@ torchvision = { index = "pytorch-cu118" }
 torchaudio = { index = "pytorch-cu118" }
 
 [project.scripts]
-musetalk = "main:main"
+musetalk-cli = "run_musetalk:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
