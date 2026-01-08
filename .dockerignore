@@ -58,6 +58,7 @@ scripts/realtime_inference.py
 
 # Development/test files (keep in repo, exclude from Docker)
 test_ffmpeg.py
+test_api.py
 inference.sh
 entrypoint.sh
 main.py

@@ -36,12 +36,12 @@ dependencies = [
     "basicsr>=1.4.2",
     "realesrgan>=0.3.0",
     
-    # OpenMMLab (DWPose dependencies)
+    # OpenMMLab (DWPose dependencies) - pinned for compatibility
     "openmim",
     "mmengine>=0.10.0",
-    "mmcv>=2.0.0",
-    "mmdet>=3.1.0",
-    "mmpose>=1.1.0",
+    "mmcv>=2.0.0,<2.1.0",
+    "mmdet>=3.1.0,<3.2.0",
+    "mmpose>=1.1.0,<1.4.0",
     
     # FastAPI stack
     "fastapi>=0.100.0",
@@ -76,6 +76,10 @@ dev = [
 [tool.uv]
 index-strategy = "unsafe-best-match"
 environments = ["sys_platform == 'linux'"]
+find-links = ["https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html"]
+
+[tool.uv.extra-build-dependencies]
+chumpy = ["pip"]
 
 [[tool.uv.index]]
 name = "pytorch-cu118"
