@@ -29,17 +29,17 @@ ENV PATH="/root/.local/bin:$PATH"
 
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
-RUN pip3 install --no-cache-dir -U openmim && \
-    mim install mmengine && \
-    mim install "mmcv==2.0.1" && \
-    mim install "mmdet==3.1.0" && \
-    mim install "mmpose==1.1.0"
-
 RUN pip3 install --no-cache-dir \
     torch==2.0.1+cu118 \
     torchvision==0.15.2+cu118 \
     torchaudio==2.0.2+cu118 \
     --index-url https://download.pytorch.org/whl/cu118
+
+RUN pip3 install --no-cache-dir -U openmim && \
+    mim install mmengine && \
+    mim install "mmcv==2.0.1" && \
+    mim install "mmdet==3.1.0" && \
+    mim install "mmpose==1.1.0"
 
 COPY pyproject.toml .
 
@@ -83,7 +83,6 @@ COPY run_musetalk.py .
 COPY app.py .
 COPY download_models.py .
 COPY download_weights.sh .
-COPY test_api.py .
 
 RUN mkdir -p /app/models /app/results /app/data
 
