@@ -24,9 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
 RUN pip3 install --no-cache-dir \
@@ -40,8 +37,6 @@ RUN pip3 install --no-cache-dir -U openmim && \
     mim install "mmcv==2.0.1" && \
     mim install "mmdet==3.1.0" && \
     pip3 install --no-cache-dir --no-build-isolation "mmpose==1.1.0"
-
-COPY pyproject.toml .
 
 RUN pip3 install --no-cache-dir \
     diffusers==0.30.2 \
@@ -72,7 +67,8 @@ RUN pip3 install --no-cache-dir \
     "gradio>=4.0.0" \
     "filterpy>=1.4.5" \
     "lmdb>=1.4.0" \
-    "yapf>=0.40.0"
+    "yapf>=0.40.0" \
+    "psutil>=5.9.0"
 
 ENV PYTHONPATH=/app:$PYTHONPATH
 
