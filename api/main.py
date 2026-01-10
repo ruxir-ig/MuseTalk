@@ -7,13 +7,33 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import InferenceRequest, HealthResponse, InferenceResponse
 from api.inference_service import MuseTalkInference
 
 inference_engine: Optional[MuseTalkInference] = None
+
+
+def iter_file(file_path: str, chunk_size: int = 1024 * 1024):
+    with open(file_path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            yield chunk
+
+
+def extract_output_name(
+    output_name: Optional[str], source_filename: str, audio_filename: str
+) -> Optional[str]:
+    if output_name is None:
+        return None
+
+    if "/" in output_name or "\\" in output_name:
+        output_name = Path(output_name).stem
+
+    output_name = Path(output_name).stem
+
+    return output_name if output_name else None
 
 
 def check_gfpgan_available() -> bool:
@@ -106,6 +126,7 @@ async def generate_video(
     fps: int = Form(25),
     batch_size: int = Form(8),
     output_name: Optional[str] = Form(None),
+    gfpgan_weight: float = Form(0.5),
 ):
     if inference_engine is None:
         raise HTTPException(status_code=503, detail="Service not ready")
@@ -130,6 +151,8 @@ async def generate_video(
             content = await source.read()
             f.write(content)
 
+        clean_output_name = extract_output_name(output_name, source_filename, audio_filename)
+
         output_video_path = inference_engine.generate(
             audio_path=audio_path,
             video_path=source_path,
@@ -141,19 +164,24 @@ async def generate_video(
             right_cheek_width=right_cheek_width,
             fps=fps,
             batch_size=batch_size,
-            output_name=output_name,
+            output_name=clean_output_name,
+            gfpgan_weight=gfpgan_weight,
         )
 
         shutil.rmtree(temp_dir)
 
         processing_time = round(time.time() - start_time, 2)
-        print(f"Video generated in {processing_time}s: {output_video_path}")
+        filename = os.path.basename(output_video_path)
+        file_size = os.path.getsize(output_video_path)
+        print(f"Video generated in {processing_time}s: {output_video_path} ({file_size} bytes)")
 
-        return FileResponse(
-            path=output_video_path,
-            media_type="video/mp4",
-            filename=os.path.basename(output_video_path),
-        )
+        return {
+            "status": "success",
+            "filename": filename,
+            "download_url": f"/download/{filename}",
+            "file_size_bytes": file_size,
+            "processing_time_seconds": processing_time,
+        }
 
     except Exception as e:
         if os.path.exists(temp_dir):
@@ -179,6 +207,12 @@ async def generate_video_json(request: InferenceRequest):
                 status_code=404, detail=f"Source file not found: {request.video_path}"
             )
 
+        clean_output_name = extract_output_name(
+            request.output_name,
+            os.path.basename(request.video_path),
+            os.path.basename(request.audio_path),
+        )
+
         output_video_path = inference_engine.generate(
             audio_path=request.audio_path,
             video_path=request.video_path,
@@ -190,7 +224,8 @@ async def generate_video_json(request: InferenceRequest):
             right_cheek_width=request.right_cheek_width,
             fps=request.fps,
             batch_size=request.batch_size,
-            output_name=request.output_name,
+            output_name=clean_output_name,
+            gfpgan_weight=request.gfpgan_weight,
         )
 
         processing_time = round(time.time() - start_time, 2)
@@ -216,4 +251,9 @@ async def download_result(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileResponse(path=file_path, media_type="video/mp4", filename=filename)
+    file_size = os.path.getsize(file_path)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(file_size),
+    }
+    return StreamingResponse(iter_file(file_path), media_type="video/mp4", headers=headers)

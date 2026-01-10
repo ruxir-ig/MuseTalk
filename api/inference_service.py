@@ -1,6 +1,5 @@
 import os
 import shutil
-import copy
 import glob
 from typing import Dict, Any, Optional
 
@@ -82,38 +81,50 @@ class MuseTalkInference:
         )
         print("GFPGAN loaded!")
 
-    def _apply_gfpgan(self, input_dir: str, output_dir: str, weight: float = 0.5) -> None:
-        self._load_gfpgan()
+    def _enhance_face_aligned(self, face_crop: np.ndarray, weight: float = 0.5) -> np.ndarray:
+        """
+        Enhance a pre-cropped face using GFPGAN with has_aligned=True.
 
-        os.makedirs(output_dir, exist_ok=True)
-        image_files = sorted(glob.glob(os.path.join(input_dir, "*.[jpJP][pnPN]*[gG]")))
+        This skips face detection entirely since MuseTalk already extracted the face.
+        GFPGAN expects 512x512 input, so we resize, enhance, then resize back.
 
-        print(f"Applying GFPGAN enhancement to {len(image_files)} frames...")
-        for img_path in tqdm(image_files, desc="GFPGAN"):
-            img_name = os.path.basename(img_path)
-            img = cv2.imread(img_path)
+        Args:
+            face_crop: Face crop from MuseTalk (typically 256x256)
+            weight: Blending weight (0=original, 1=fully enhanced)
 
-            if self.use_float16:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    _, _, enhanced_img = self.gfpgan_restorer.enhance(
-                        img,
-                        has_aligned=False,
-                        only_center_face=False,
-                        paste_back=True,
-                        weight=weight,
-                    )
-            else:
-                _, _, enhanced_img = self.gfpgan_restorer.enhance(
-                    img,
-                    has_aligned=False,
-                    only_center_face=False,
-                    paste_back=True,
-                    weight=weight,
+        Returns:
+            Enhanced face crop at original resolution
+        """
+        if self.gfpgan_restorer is None:
+            return face_crop
+
+        original_size = (face_crop.shape[1], face_crop.shape[0])  # (w, h)
+
+        # GFPGAN expects 512x512 for optimal quality
+        face_512 = cv2.resize(face_crop, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+
+        try:
+            # has_aligned=True skips face detection - HUGE speedup!
+            # paste_back=False since we're handling the blending ourselves
+            _, restored_faces, _ = self.gfpgan_restorer.enhance(
+                face_512,
+                has_aligned=True,
+                only_center_face=False,
+                paste_back=False,
+                weight=weight,
+            )
+
+            if restored_faces and len(restored_faces) > 0:
+                enhanced_512 = restored_faces[0]
+                # Resize back to original face crop size
+                enhanced_crop = cv2.resize(
+                    enhanced_512, original_size, interpolation=cv2.INTER_LANCZOS4
                 )
+                return enhanced_crop
+        except Exception as e:
+            print(f"GFPGAN enhancement failed: {e}")
 
-            cv2.imwrite(os.path.join(output_dir, img_name), enhanced_img)
-
-        print(f"Enhanced frames saved to {output_dir}")
+        return face_crop
 
     @torch.no_grad()
     def generate(
@@ -130,6 +141,7 @@ class MuseTalkInference:
         batch_size: int = 8,
         output_name: Optional[str] = None,
         result_dir: str = "./results",
+        gfpgan_weight: float = 0.5,
     ) -> str:
         if not self.models_loaded:
             self.load_models()
@@ -229,33 +241,37 @@ class MuseTalkInference:
             for res_frame in recon:
                 res_frame_list.append(res_frame)
 
-        print("Padding generated images to original video size")
-        for i, res_frame in enumerate(tqdm(res_frame_list)):
+        print("Blending frames" + (" with GFPGAN enhancement" if enhance else ""))
+
+        if enhance:
+            self._load_gfpgan()
+
+        for i, res_frame in enumerate(tqdm(res_frame_list, desc="Blending")):
             bbox = coord_list_cycle[i % len(coord_list_cycle)]
-            ori_frame = copy.deepcopy(frame_list_cycle[i % len(frame_list_cycle)])
+            ori_frame = frame_list_cycle[i % len(frame_list_cycle)].copy()
             x1, y1, x2, y2 = bbox
             y2 = y2 + extra_margin
             y2 = min(y2, ori_frame.shape[0])
+
+            face_crop = res_frame.astype(np.uint8)
+
+            if enhance:
+                face_crop = self._enhance_face_aligned(face_crop, gfpgan_weight)
+
             try:
-                res_frame = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
+                face_resized = cv2.resize(face_crop, (x2 - x1, y2 - y1))
             except Exception:
                 continue
 
             combine_frame = get_image(
-                ori_frame, res_frame, [x1, y1, x2, y2], mode=parsing_mode, fp=fp
+                ori_frame, face_resized, [x1, y1, x2, y2], mode=parsing_mode, fp=fp
             )
             cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png", combine_frame)
-
-        final_frames_path = result_img_save_path
-        if enhance:
-            enhanced_path = os.path.join(temp_dir, f"{input_basename}_{audio_basename}_enhanced")
-            self._apply_gfpgan(result_img_save_path, enhanced_path)
-            final_frames_path = enhanced_path
 
         temp_vid_path = os.path.join(temp_dir, f"temp_{input_basename}_{audio_basename}.mp4")
         cmd_img2video = (
             f"ffmpeg -y -v warning -r {fps} -f image2 "
-            f"-i {final_frames_path}/%08d.png -vcodec libx264 "
+            f"-i {result_img_save_path}/%08d.png -vcodec libx264 "
             f"-vf format=yuv420p -crf 18 {temp_vid_path}"
         )
         os.system(cmd_img2video)
