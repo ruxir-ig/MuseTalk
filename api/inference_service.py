@@ -1,14 +1,15 @@
 import os
 import shutil
-import copy
 import glob
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 import cv2
 import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import WhisperModel
+from basicsr.utils import img2tensor, tensor2img
+from torchvision.transforms.functional import normalize
 
 from musetalk.utils.blending import get_image
 from musetalk.utils.face_parsing import FaceParsing
@@ -79,41 +80,67 @@ class MuseTalkInference:
             upscale=1,
             arch="clean",
             channel_multiplier=2,
+            device=self.device,
         )
         print("GFPGAN loaded!")
 
-    def _apply_gfpgan(self, input_dir: str, output_dir: str, weight: float = 0.5) -> None:
-        self._load_gfpgan()
+    def _enhance_batch_direct(
+        self, face_crops: List[np.ndarray], weight: float = 0.5
+    ) -> List[np.ndarray]:
+        """
+        BATCHED GFPGAN enhancement - process multiple faces in one GPU call.
 
-        os.makedirs(output_dir, exist_ok=True)
-        image_files = sorted(glob.glob(os.path.join(input_dir, "*.[jpJP][pnPN]*[gG]")))
+        This bypasses GFPGAN's face detection entirely and directly calls the
+        neural network on pre-cropped faces. Much faster than calling enhance()
+        per frame because:
+        1. No face detection overhead (RetinaFace skipped)
+        2. Batched GPU inference (one kernel launch for N faces)
+        3. No face_helper state management overhead
+        """
+        if not face_crops or self.gfpgan_restorer is None:
+            return face_crops
 
-        print(f"Applying GFPGAN enhancement to {len(image_files)} frames...")
-        for img_path in tqdm(image_files, desc="GFPGAN"):
-            img_name = os.path.basename(img_path)
-            img = cv2.imread(img_path)
+        batch_size = len(face_crops)
+        original_sizes = [(crop.shape[1], crop.shape[0]) for crop in face_crops]
 
-            if self.use_float16:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    _, _, enhanced_img = self.gfpgan_restorer.enhance(
-                        img,
-                        has_aligned=False,
-                        only_center_face=False,
-                        paste_back=True,
-                        weight=weight,
-                    )
-            else:
-                _, _, enhanced_img = self.gfpgan_restorer.enhance(
-                    img,
-                    has_aligned=False,
-                    only_center_face=False,
-                    paste_back=True,
-                    weight=weight,
+        faces_512 = []
+        for crop in face_crops:
+            face_512 = cv2.resize(crop, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+            faces_512.append(face_512)
+
+        face_tensors = []
+        for face in faces_512:
+            face_t = img2tensor(face / 255.0, bgr2rgb=True, float32=True)
+            normalize(face_t, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
+            face_tensors.append(face_t)
+
+        batch_tensor = torch.stack(face_tensors, dim=0).to(self.device)
+
+        try:
+            with torch.no_grad():
+                output_batch = self.gfpgan_restorer.gfpgan(
+                    batch_tensor, return_rgb=False, weight=weight
+                )[0]
+
+            enhanced_crops = []
+            for i in range(batch_size):
+                restored = tensor2img(output_batch[i], rgb2bgr=True, min_max=(-1, 1))
+                restored = restored.astype("uint8")
+                resized_back = cv2.resize(
+                    restored, original_sizes[i], interpolation=cv2.INTER_LANCZOS4
                 )
+                enhanced_crops.append(resized_back)
 
-            cv2.imwrite(os.path.join(output_dir, img_name), enhanced_img)
+            return enhanced_crops
 
-        print(f"Enhanced frames saved to {output_dir}")
+        except Exception as e:
+            print(f"Batched GFPGAN failed: {e}, falling back to sequential")
+            return face_crops
+
+    def _enhance_face_aligned(self, face_crop: np.ndarray, weight: float = 0.5) -> np.ndarray:
+        """Single-frame enhancement for compatibility."""
+        result = self._enhance_batch_direct([face_crop], weight)
+        return result[0] if result else face_crop
 
     @torch.no_grad()
     def generate(
@@ -130,6 +157,8 @@ class MuseTalkInference:
         batch_size: int = 8,
         output_name: Optional[str] = None,
         result_dir: str = "./results",
+        gfpgan_weight: float = 0.5,
+        gfpgan_batch_size: int = 8,
     ) -> str:
         if not self.models_loaded:
             self.load_models()
@@ -204,7 +233,7 @@ class MuseTalkInference:
         coord_list_cycle = coord_list + coord_list[::-1]
         input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
 
-        print("Starting inference...")
+        print("Starting MuseTalk inference...")
         video_num = len(whisper_chunks)
         device_str = str(self.device)
         gen = datagen(
@@ -218,7 +247,7 @@ class MuseTalkInference:
         res_frame_list = []
         total = int(np.ceil(float(video_num) / batch_size))
 
-        for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total)):
+        for i, (whisper_batch, latent_batch) in enumerate(tqdm(gen, total=total, desc="MuseTalk")):
             audio_feature_batch = self.pe(whisper_batch)
             latent_batch = latent_batch.to(dtype=self.weight_dtype)
 
@@ -229,33 +258,59 @@ class MuseTalkInference:
             for res_frame in recon:
                 res_frame_list.append(res_frame)
 
-        print("Padding generated images to original video size")
-        for i, res_frame in enumerate(tqdm(res_frame_list)):
-            bbox = coord_list_cycle[i % len(coord_list_cycle)]
-            ori_frame = copy.deepcopy(frame_list_cycle[i % len(frame_list_cycle)])
-            x1, y1, x2, y2 = bbox
-            y2 = y2 + extra_margin
-            y2 = min(y2, ori_frame.shape[0])
-            try:
-                res_frame = cv2.resize(res_frame.astype(np.uint8), (x2 - x1, y2 - y1))
-            except Exception:
-                continue
-
-            combine_frame = get_image(
-                ori_frame, res_frame, [x1, y1, x2, y2], mode=parsing_mode, fp=fp
-            )
-            cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png", combine_frame)
-
-        final_frames_path = result_img_save_path
         if enhance:
-            enhanced_path = os.path.join(temp_dir, f"{input_basename}_{audio_basename}_enhanced")
-            self._apply_gfpgan(result_img_save_path, enhanced_path)
-            final_frames_path = enhanced_path
+            self._load_gfpgan()
+            print(f"Blending frames with BATCHED GFPGAN (batch_size={gfpgan_batch_size})")
+        else:
+            print("Blending frames")
+
+        total_frames = len(res_frame_list)
+        frame_idx = 0
+
+        for chunk_start in range(0, total_frames, gfpgan_batch_size):
+            chunk_end = min(chunk_start + gfpgan_batch_size, total_frames)
+            chunk_indices = list(range(chunk_start, chunk_end))
+
+            face_crops = []
+            frame_data = []
+
+            for i in chunk_indices:
+                res_frame = res_frame_list[i]
+                bbox = coord_list_cycle[i % len(coord_list_cycle)]
+                ori_frame = frame_list_cycle[i % len(frame_list_cycle)].copy()
+                x1, y1, x2, y2 = bbox
+                y2 = y2 + extra_margin
+                y2 = min(y2, ori_frame.shape[0])
+
+                face_crop = res_frame.astype(np.uint8)
+                face_crops.append(face_crop)
+                frame_data.append((ori_frame, x1, y1, x2, y2))
+
+            if enhance and face_crops:
+                enhanced_crops = self._enhance_batch_direct(face_crops, gfpgan_weight)
+            else:
+                enhanced_crops = face_crops
+
+            for idx, (enhanced_crop, (ori_frame, x1, y1, x2, y2)) in enumerate(
+                zip(enhanced_crops, frame_data)
+            ):
+                try:
+                    face_resized = cv2.resize(enhanced_crop, (x2 - x1, y2 - y1))
+                except Exception:
+                    continue
+
+                combine_frame = get_image(
+                    ori_frame, face_resized, [x1, y1, x2, y2], mode=parsing_mode, fp=fp
+                )
+                cv2.imwrite(f"{result_img_save_path}/{str(frame_idx).zfill(8)}.png", combine_frame)
+                frame_idx += 1
+
+        print(f"Saved {frame_idx} frames")
 
         temp_vid_path = os.path.join(temp_dir, f"temp_{input_basename}_{audio_basename}.mp4")
         cmd_img2video = (
             f"ffmpeg -y -v warning -r {fps} -f image2 "
-            f"-i {final_frames_path}/%08d.png -vcodec libx264 "
+            f"-i {result_img_save_path}/%08d.png -vcodec libx264 "
             f"-vf format=yuv420p -crf 18 {temp_vid_path}"
         )
         os.system(cmd_img2video)
